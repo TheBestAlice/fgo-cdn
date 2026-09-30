@@ -12,5 +12,6 @@ https://testingcf.jsdelivr.net/gh/TheBestAlice/fgo-cdn@main/<path>
 - `fandom/`：来自 [Fate/Grand Order Wiki（fandom）](https://fategrandorder.fandom.com)，补 fgo.wiki 缺的内容：
   - `fandom/sprite/{序号}_{战斗形象}.webp`：战斗小人（按不透明区域裁剪，最长边 512）。
   - `fandom/voice/{序号}.json`：语音台词文本（日文原文；能对上 fgo.wiki 的行带中文与 mp3 文件名）。
+  - `fandom/item/{道具id}.webp`：道具图标（112 宽；fgo.wiki 图标库以外的素材、活动道具、种火、芙芙等）。
 
-由卡片项目的 `tools/mirror-assets.mjs`、`tools/fetch-fandom.mjs` 生成，请勿手改。游戏素材与台词版权归 TYPE-MOON / FGO PROJECT 所有；fandom 的台词整理遵循其 CC BY-SA 许可。
+由卡片项目的 `tools/mirror-assets.mjs`、`tools/fetch-fandom.mjs`、`tools/fetch-items.mjs` 生成，请勿手改。游戏素材与台词版权归 TYPE-MOON / FGO PROJECT 所有；fandom 的台词整理遵循其 CC BY-SA 许可。
