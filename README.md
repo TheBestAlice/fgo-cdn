@@ -14,4 +14,6 @@ https://testingcf.jsdelivr.net/gh/TheBestAlice/fgo-cdn@main/<path>
   - `fandom/voice/{序号}.json`：语音台词文本（日文原文；能对上 fgo.wiki 的行带中文与 mp3 文件名）。
   - `fandom/item/{道具id}.webp`：道具图标（112 宽；fgo.wiki 图标库以外的素材、活动道具、种火、芙芙等）。
 
+- `dushi-pokemon/ladder/`：都市宝可梦角色卡的图鉴天梯模块（`ladder.js`、招式动画 `anim/`、对战引擎 `engine/`），许可与来源逐项见该目录 `README.md` 与 `anim/NOTICE.md`；其中 `engine/` 归原玩家脚本作者所有。
+
 由卡片项目的 `tools/mirror-assets.mjs`、`tools/fetch-fandom.mjs`、`tools/fetch-items.mjs` 生成，请勿手改。游戏素材与台词版权归 TYPE-MOON / FGO PROJECT 所有；fandom 的台词整理遵循其 CC BY-SA 许可。
