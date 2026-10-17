@@ -10,6 +10,9 @@
  *   04 反射壁、光墙、极光幕减伤（3 处）
  *   05 暴击无视攻方负面阶级（2 处）
  *   06 讲究系道具锁招（4 处）
+ *   07 异常状态正作化（灼伤 1/16、剧毒取整、睡眠 1～3 回合、睡觉 2 回合、火招解冻）（5 处）
+ *   08 树果立即触发并消耗、气势披带消耗、凸凸头盔（6 处）
+ *   09 命中闪避阶级、击掌奇袭/迎头一击、突袭/迅雷、拍落 1.5 倍、寄生种子草系免疫（12 处）
  * 补丁标记：源码中搜索「[天梯补丁 NN]」
  * ========================================================================== */
 /* =============================================================================
@@ -1602,6 +1605,11 @@
   function calcDamage(dex, atkU, defU, move, crit, rng, weather, ctx, spreadScale) {
     /* 契约 10.97：招式对象可能缺失（数据表查不到/槽位未识别）→ 兜成 {}，避免读属性崩溃 */
     move = move || {};
+    /* [天梯补丁 09] 拍落：目标持有道具时威力 ×1.5（用副本，不改数据表里的招式） */
+    try {
+      if (String(move.zh || move.name || '') === '拍落' && defU && itemNameOf(defU) && num(move.power, 0) > 0)
+        move = Object.assign({}, move, { power: Math.floor(num(move.power, 0) * 1.5) });
+    } catch (eKo09) { }
     /* 契约 10.119：**按体重算威力的招式**（打草结/低踢/踢倒/重磅冲撞/高温重压）
        —— 引擎原来没有体重机制 ✗ → 这些招式 power 为空 → 打 0 伤害 ✓（真机：打草结"效果绝佳"但没伤害） */
     var __rW;   /* [天梯补丁 03] 体重类招式也要走下面的守住/墙/道具后处理，不再提前 return */
@@ -2313,6 +2321,7 @@
     if (!unit || unit.fainted) return;
     unit.justSwitchedIn = true;
     unit.activeTurns = 0;
+    unit.__moveActions = 0;   /* [天梯补丁 09] 上场后的出招次数（击掌奇袭/迎头一击用） */
     var ctx = { dex: dex, state: state, turn: toInt(obj(state.meta).turnCount, 0), rng: state.__statRng || Math.random };
     var kinds = abilityKindsOf(unit);
     for (var i = 0; i < kinds.length; i++) {
@@ -3183,7 +3192,7 @@
     if (setAcc !== null) acc = setAcc;
     if (acc >= 100 && atkAccStage >= 0 && defEvaStage <= 0 && improvAcc === 0) return true;
     var stage = clamp(atkAccStage - defEvaStage, -6, 6);
-    var finalAcc = clamp(acc * stageMul(stage) + improvAcc, 0, 100);
+    var finalAcc = clamp(acc * (stage >= 0 ? (3 + stage) / 3 : 3 / (3 - stage)) + improvAcc, 0, 100);   /* [天梯补丁 09] 命中阶级倍率 3/(3−n) */
     if (finalAcc >= 100) return true; /* 满命中后不再消费随机数，保证测试可预期 */
     return rng() * 100 < finalAcc;
   }
@@ -3306,6 +3315,13 @@
   function applyStages(unit, boosts) {
     var changed = {};
     if (!isPlainObject(boosts)) return changed;
+    /* [天梯补丁 09] 数据表的命中/闪避写作 accuracy/evasion，这里统一成战斗态的 acc/eva */
+    var __nb09 = {};
+    Object.keys(boosts).forEach(function (k0) {
+      var k1 = k0 === 'accuracy' ? 'acc' : (k0 === 'evasion' ? 'eva' : k0);
+      __nb09[k1] = toInt(__nb09[k1], 0) + toInt(boosts[k0], 0);
+    });
+    boosts = __nb09;
     var keys = Object.keys(boosts);
     if (abilityHas(unit, 'invertStages')) {
       var inv = {};
@@ -4709,6 +4725,7 @@
       for (var ol = 0; ol < order.length; ol++) order[ol].movesLast = (ol === order.length - 1);
 
       /* ---- 3. 逐条执行：每次行动前**重新校验目标是否存活**（触发自动重定向） ---- */
+      ctx.__order = order;   /* [天梯补丁 09] 突袭/迅雷要查目标本回合的行动 */
       for (var k = 0; k < order.length; k++) {
         if (st.ended) break;
         var step = order[k];
@@ -4716,6 +4733,7 @@
         if (step.blocked) continue;
         ctx.movesLast = !!step.movesLast;
         executeMoveForAction(ctx, step, act.keepGoing);
+        step.__done = true;   /* [天梯补丁 09] */
         /* 契约 10.45：折返类招式 —— 在**这个行动位**立刻换人：
            · 不消耗回合（同一回合内完成攻击+换人）
            · 后面的行动打的是**换上来的**那只（原单位不再吃本回合后续伤害）
@@ -5032,10 +5050,7 @@
         unit.item = __stolen;
         addEntry(st, { turn: turn, actor: side, actorName: unit.nickname, kind: 'item', item: itemNameOf(unit), notes: ['（' + __nmY + '）'], text: unit.nickname + ' 偷走了 ' + __tgtY.nickname + ' 的 ' + itemNameOf(unit) + '！' });
       }
-      if (__nmY === '拍落' && __tgtY && itemNameOf(__tgtY)) {
-        addEntry(st, { turn: turn, actor: side, actorName: unit.nickname, kind: 'item', item: itemNameOf(__tgtY), notes: ['（拍落）'], text: __tgtY.nickname + ' 的 ' + itemNameOf(__tgtY) + ' 被打落了！' });
-        __tgtY.item = null;
-      }
+      /* [天梯补丁 09] 拍落改到造成伤害之后才打落道具（见 moveAgainstTarget） */
       if ((__nmY === '戏法' || __nmY === '掉包') && __tgtY) {
         var __a1 = unit.item; unit.item = __tgtY.item; __tgtY.item = __a1;
         addEntry(st, { turn: turn, actor: side, actorName: unit.nickname, kind: 'item', notes: ['（' + __nmY + '）'], text: '双方交换了携带的道具！' });
@@ -5250,6 +5265,10 @@
           ? (sideArray(st, side === 'ally' ? 'foe' : 'ally')[toInt(action.target, 0)] || null) : null;
         if (__nmP === '哈欠' && __tauntT2) { __tauntT2.volatile = __tauntT2.volatile || {}; __tauntT2.volatile['哈欠'] = 1; }
         if (__nmP === '定身法' && __tauntT2 && __tauntT2.__lastMove) { __tauntT2.volatile = __tauntT2.volatile || {}; __tauntT2.volatile['定身法'] = __tauntT2.__lastMove; }
+        if (__nmP === '寄生种子' && __tauntT2 && (__tauntT2.types || []).indexOf('草') >= 0) {   /* [天梯补丁 09] 草属性不会被寄生 */
+          addEntry(st, { turn: turn, actor: side, actorName: unit.nickname, kind: 'status', notes: ['（寄生种子）'], text: __tauntT2.nickname + ' 没有受到影响……' });
+          __tauntT2 = null;
+        }
         if (__nmP === '寄生种子' && __tauntT2) { __tauntT2.volatile = __tauntT2.volatile || {}; __tauntT2.volatile['寄生种子'] = 1; }
         if (__nmP === '紧束' || __nmP === '盐腌' || __nmP === '糖浆炸弹' || __nmP === '蛸固') { if (__tauntT2) { __tauntT2.volatile = __tauntT2.volatile || {}; __tauntT2.volatile[__nmP] = 1; } }
         if (__nmP === '恶梦' && __tauntT2) { __tauntT2.volatile = __tauntT2.volatile || {}; __tauntT2.volatile['恶梦'] = 1; }
@@ -5427,9 +5446,32 @@
   }
 
   /** ③ 单次出招：单体路径（群体招式的每个目标也走这里） */
+  /* [天梯补丁 09] 出招前的失败条件（PP 已扣）：
+   *   击掌奇袭/迎头一击只在上场后的第一次出招成功；突袭/迅雷要求目标本回合还没行动、且选的是攻击招式 */
+  function __moveFailsBeforeHit(ctx, side, unit, target, prep) {
+    var first = !toInt(unit.__moveActions, 0);
+    unit.__moveActions = toInt(unit.__moveActions, 0) + 1;
+    var name = String((prep && prep.move && (prep.move.zh || prep.move.name)) || (prep && prep.slot && prep.slot.name) || '');
+    var fail = false;
+    if ((name === '击掌奇袭' || name === '迎头一击') && !first) fail = true;
+    if ((name === '突袭' || name === '迅雷') && target) {
+      var step = null, ord = ctx.__order || [];
+      for (var i = 0; i < ord.length; i++) if (ord[i] && ord[i].unit === target) { step = ord[i]; break; }
+      var tSlot = (step && !step.__done && !step.blocked && step.action && step.action.kind !== 'switch')
+        ? (findSlot(target, step.action.move) || null) : null;
+      var tMove = tSlot && tSlot.move;
+      if (!tMove || String(tMove.category) === 'status') fail = true;
+    }
+    if (!fail) return false;
+    addEntry(ctx.state, { turn: ctx.turn, actor: side, actorName: unit.nickname, kind: 'move', move: name, hit: false,
+      notes: ['但是失败了！'], text: unit.nickname + ' 使用了 ' + name + '！但是失败了！' });
+    return true;
+  }
+
   function executeMove(ctx, side, unit, target, action) {
     var prep = prepareMove(ctx, side, unit, action);
     if (!prep) return null;
+    if (__moveFailsBeforeHit(ctx, side, unit, target, prep)) return null;
     return moveAgainstTarget(ctx, side, unit, target, prep.move, prep.slot, null);
   }
 
@@ -5440,6 +5482,7 @@
   function executeMoveOnTargets(ctx, side, unit, targets, action) {
     var prep = prepareMove(ctx, side, unit, action);
     if (!prep) return null;
+    unit.__moveActions = toInt(unit.__moveActions, 0) + 1;   /* [天梯补丁 09] 群体招式也算一次出招 */
     var spread = targets.length > 1;
     var scale = spread ? SPREAD_DAMAGE_SCALE : 1;
     for (var i = 0; i < targets.length; i++) {
@@ -5645,7 +5688,7 @@
       if (move.rest) {
         target.curHP = target.maxHP;
         target.status = 'slp';
-        target.statusCounter = toInt(opts_num(ctx.opts.restTurns, 2), 2);
+        target.statusCounter = toInt(opts_num(ctx.opts.restTurns, 3), 3);   /* [天梯补丁 07] 睡觉固定睡 2 回合 */
         notes.push(unit.nickname + ' 睡着了，体力全满！');
       }
       /* 变化招式的效果在数据表里统一存在 secondaries（chance:100）——早先只读了
@@ -5743,6 +5786,25 @@
     try { target.__dmgTakenThisTurn = num(target.__dmgTakenThisTurn, 0) + num(dealt, 0); target.__lastHitCat = String((move && (move.category || move.分类)) || ''); } catch (eRec) { }
 
     target.curHP = Math.max(0, target.curHP - dealt);
+    /* [天梯补丁 07] 冰冻的目标被火属性招式或热水等可解冻招式击中后解冻 */
+    try {
+      if (dealt > 0 && target.curHP > 0 && target.status === 'frz' && move
+        && (move.type === '火' || (Array.isArray(move.flags) && move.flags.indexOf('defrost') >= 0))) {
+        target.status = 'ok'; target.statusCounter = 0;
+        addEntry(st, { turn: ctx && ctx.turn, actor: target.side, actorName: target.nickname, kind: 'status',
+          notes: [target.nickname + ' 解冻了！'], text: target.nickname + ' 解冻了！' });
+      }
+    } catch (eTh07) { }
+    if (dealt > 0) __eatBerryNow(ctx, target);   /* [天梯补丁 08] 被打到一半以下立刻吃文柚果 */
+    /* [天梯补丁 09] 拍落：造成伤害后打落目标的道具（树果已先吃掉的就没有可打落的了） */
+    try {
+      if (dealt > 0 && move && String(move.zh || move.name || '') === '拍落' && itemNameOf(target)) {
+        var __ko = itemNameOf(target);
+        target.item = null;
+        addEntry(st, { turn: ctx && ctx.turn, actor: target.side, actorName: target.nickname, kind: 'item', item: __ko, notes: ['（拍落）'],
+          text: target.nickname + ' 的 ' + __ko + ' 被打落了！' });
+      }
+    } catch (eKo09b) { }
     /* 契约 10.88：贝壳之铃（攻击方回复伤害的 1/8）/ 生命宝珠（攻击方反伤 1/10 最大体力） */
     try {
       var __atk2 = (ctx && (ctx.attacker || ctx.atkU || ctx.attackerUnit)) || null;
@@ -5797,6 +5859,7 @@
         addEntry(st, { turn: ctx && ctx.turn, actor: (st.battle.allies || []).indexOf(target) >= 0 ? 'ally' : 'foe',
           actorName: target.nickname, kind: 'item', item: itemNameOf(target),
           notes: ['（气势披带）'], text: target.nickname + ' 靠气势披带撑住了！' });
+        target.item = null;   /* [天梯补丁 08] 气势披带用后消失 */
       }
     } catch (eFs) { }
 
@@ -5923,6 +5986,17 @@
       ctx.__lastAttacker = unit;
       bindState(target, st); bindState(unit, st);
       hookAfterDamagingHit(ctx, unit, target, move, totalDamage, moveHasFlag(move, 'contact') && !abilityHas(unit, 'noContact'));
+      /* [天梯补丁 08] 凸凸头盔：接触招式命中后攻方损失最大体力 1/6（持有者倒下也生效；魔法防守免疫） */
+      try {
+        if (moveHasFlag(move, 'contact') && !abilityHas(unit, 'noContact') && itemNameOf(target) === '凸凸头盔'
+          && !unit.fainted && num(unit.curHP, 0) > 0 && !abilityHas(unit, 'noIndirectDamage')) {
+          var __rh = Math.max(1, Math.floor(num(unit.maxHP, 1) / 6)), __rh0 = unit.curHP;
+          unit.curHP = Math.max(0, unit.curHP - __rh);
+          addEntry(st, { turn: ctx.turn, actor: target.side, actorName: target.nickname, kind: 'item', item: '凸凸头盔', hpFrom: __rh0, hpTo: unit.curHP,
+            notes: ['（凸凸头盔）'], text: unit.nickname + ' 被凸凸头盔伤到了！' });
+          if (unit.curHP <= 0) faintUnit(ctx, unit);
+        }
+      } catch (eRh08) { }
     }
 
     applySelfBoosts(ctx, side, unit, move, true);
@@ -5957,7 +6031,9 @@
     }
     if (unit.status === 'frz') {
       var thaw = num(ctx.opts.thawChance, 0.2);
-      if (rng() < thaw) {
+      /* [天梯补丁 07] 使用火焰轮、闪焰冲锋、热水等可解冻招式时自身先解冻（不掷骰） */
+      var __selfThaw = !!(slot && slot.move && Array.isArray(slot.move.flags) && slot.move.flags.indexOf('defrost') >= 0);
+      if (__selfThaw || rng() < thaw) {
         unit.status = 'ok';
         addEntry(st, {
           turn: turn, actor: side, actorName: unit.nickname, kind: 'status',
@@ -6081,10 +6157,11 @@
 
     var rngFn = (ctx && typeof ctx.rng === 'function') ? ctx.rng : Math.random;
     unit.status = code;
-    /* 睡眠回合数：随机 1~2（1 + floor(rng*2)）；早起特性把睡眠回合减半 */
-    unit.statusCounter = code === 'slp' ? 1 + Math.floor(rngFn() * 2) : 0;
+    /* [天梯补丁 07] 睡眠计数 2～4：每次行动前减一，归零才醒，所以无法行动 1～3 回合；早起特性把计数减半 */
+    unit.statusCounter = code === 'slp' ? 2 + Math.floor(rngFn() * 3) : 0;
     if (code === 'slp' && abilityHas(unit, 'earlyBird')) unit.statusCounter = Math.max(1, Math.ceil(unit.statusCounter / 2));
     if (code === 'fnt') unit.fainted = true;
+    if (ctx && code !== 'fnt' && code !== 'ok') __eatBerryNow(ctx, unit);   /* [天梯补丁 08] 陷入异常立刻吃木子果 */
   }
 
   /** 濒死处理 + 经验结算 + 特性濒死钩子（飞出的内在物等） */
@@ -6270,6 +6347,33 @@
    * 剧毒宝珠/火焰宝珠：给持有者上异常（毒疗持有者照样中毒 ✓ 毒疗的免疫只针对伤害）；
    * 剩饭/黑色污泥：回复 1/16。
    */
+  /* [天梯补丁 08] 文柚果/木子果：条件满足立即吃掉，吃完消失；返回是否吃了 */
+  function __eatBerryNow(ctx, u) {
+    try {
+      var st = ctx && ctx.state;
+      if (!st || !st.battle || !u || u.fainted || num(u.curHP, 0) <= 0) return false;
+      var d = itemDefOf(u), it = itemNameOf(u);
+      if (!d || !it) return false;
+      var actor = (st.battle.allies || []).indexOf(u) >= 0 ? 'ally' : 'foe';
+      if (d.eotHealHalf && u.curHP <= Math.floor(u.maxHP / 2)) {
+        var h0 = u.curHP;
+        u.curHP = Math.min(u.maxHP, u.curHP + Math.max(1, Math.floor(u.maxHP * d.eotHealHalf)));
+        u.item = null;
+        addEntry(st, { turn: ctx.turn, actor: actor, actorName: u.nickname, kind: 'item', item: it, hpFrom: h0, hpTo: u.curHP,
+          notes: ['（' + it + '）'], text: u.nickname + ' 吃了 ' + it + '，回复了体力！' });
+        return true;
+      }
+      if (d.eotCure && u.status && u.status !== 'ok' && u.status !== '健康' && u.status !== 'fnt') {
+        u.status = 'ok'; u.statusCounter = 0;
+        u.item = null;
+        addEntry(st, { turn: ctx.turn, actor: actor, actorName: u.nickname, kind: 'item', item: it,
+          notes: ['（' + it + '）'], text: u.nickname + ' 吃了 ' + it + '，异常状态解除了！' });
+        return true;
+      }
+    } catch (eBerry08) { }
+    return false;
+  }
+
   function applyHeldItemsEndOfTurn(ctx) {
     var st = ctx.state;
     if (!st || !st.battle) return;
@@ -6309,19 +6413,7 @@
       /* 契约 10.86b：果子类（文柚果=半血以下回 1/4；木子果=解异常；苹野果=回 10 PP） */
       try {
         var __d2 = itemDefOf(u);
-        if (__d2 && __d2.eotHealHalf && u.curHP > 0 && u.curHP <= Math.floor(u.maxHP / 2)) {
-          var __h2 = Math.max(1, Math.floor(u.maxHP * __d2.eotHealHalf));
-          u.curHP = Math.min(u.maxHP, u.curHP + __h2);
-          addEntry(st, { turn: ctx.turn, actor: (st.battle.allies || []).indexOf(u) >= 0 ? 'ally' : 'foe', actorName: u.nickname,
-            kind: 'item', item: it, notes: ['（' + it + '）'], text: u.nickname + ' 吃了 ' + it + '，回复了体力！' });
-          return;
-        }
-        if (__d2 && __d2.eotCure && u.status && u.status !== 'ok' && u.status !== '健康') {
-          u.status = 'ok'; u.statusCounter = 0;
-          addEntry(st, { turn: ctx.turn, actor: (st.battle.allies || []).indexOf(u) >= 0 ? 'ally' : 'foe', actorName: u.nickname,
-            kind: 'item', item: it, notes: ['（' + it + '）'], text: u.nickname + ' 吃了 ' + it + '，异常状态解除了！' });
-          return;
-        }
+        if (__eatBerryNow(ctx, u)) return;   /* [天梯补丁 08] 回合末兜底（如灼伤扣血后降到一半以下），吃完消失 */
         if (__d2 && __d2.eotPP && Array.isArray(u.moves)) {
           u.moves.forEach(function (sl) { if (sl && sl.curPP < sl.maxPP) sl.curPP = Math.min(sl.maxPP, sl.curPP + __d2.eotPP); });
           return;
@@ -6815,6 +6907,7 @@
               var __foes = __isAlly ? (st.battle.foes || []) : (st.battle.allies || []);
               __opp = __foes.filter(function (x) { return x && !x.fainted; })[0] || null;
             } catch (eO) { }
+            if (__u.volatile['寄生种子'] && (__u.types || []).indexOf('草') >= 0) delete __u.volatile['寄生种子'];   /* [天梯补丁 09] */
             if (__u.volatile['寄生种子']) {
               var __d1 = Math.max(1, Math.floor(__max2 / 8));
               __u.curHP = Math.max(0, num(__u.curHP, 0) - __d1);
@@ -6893,9 +6986,9 @@
         var dmg;
         if (u.status === 'tox') {
           u.statusCounter = toInt(u.statusCounter, 0) + 1;
-          dmg = Math.max(1, Math.floor(u.maxHP * u.statusCounter / 16));
+          dmg = Math.max(1, Math.floor(u.maxHP / 16)) * Math.min(15, u.statusCounter);   /* [天梯补丁 07] 剧毒 floor(1/16)×回合数 */
         } else {
-          dmg = Math.max(1, Math.floor(u.maxHP / 8));
+          dmg = Math.max(1, Math.floor(u.maxHP / (u.status === 'brn' ? 16 : 8)));       /* [天梯补丁 07] 灼伤 1/16（第 7 世代起），中毒 1/8 */
         }
         var from = u.curHP;
         u.curHP = Math.max(0, u.curHP - dmg);
